@@ -15,7 +15,6 @@ import android.os.Looper;
 import android.provider.Settings;
 import android.text.InputFilter;
 import android.view.Gravity;
-import android.view.View;
 import android.widget.Button;
 import android.widget.EditText;
 import android.widget.LinearLayout;
@@ -38,7 +37,7 @@ public class MainActivity extends Activity {
     private static final int REQ_VPN = 1001;
     private static final int REQ_OVERLAY = 1002;
 
-    private TextView tvStatus, tvRuleInfo, tvExpire;
+    private TextView tvStatus, tvExpire;
     private EditText etKey;
     private Button btnPower, btnVerify, btnFloat;
     private SharedPreferences sp;
@@ -71,17 +70,17 @@ public class MainActivity extends Activity {
         root.setPadding(dp(20), dp(36), dp(20), dp(30));
         root.setGravity(Gravity.CENTER_HORIZONTAL);
 
-        // 顶部霓虹标题
+        // 顶部标题
         TextView title = new TextView(this);
-        title.setText("NETGUARD PRO");
+        title.setText("极速助手 PRO");
         title.setTextColor(Color.parseColor("#00E5FF"));
         title.setTextSize(26);
         title.setTypeface(Typeface.DEFAULT_BOLD);
-        title.setLetterSpacing(0.15f);
+        title.setLetterSpacing(0.12f);
         root.addView(title);
 
         TextView sub = new TextView(this);
-        sub.setText("云端极速拦截引擎 · 零延迟直连");
+        sub.setText("安全稳定 · 一键切换");
         sub.setTextColor(Color.parseColor("#64748B"));
         sub.setTextSize(12);
         sub.setPadding(0, dp(4), 0, dp(28));
@@ -100,7 +99,7 @@ public class MainActivity extends Activity {
         root.addView(btnPower);
 
         tvStatus = new TextView(this);
-        tvStatus.setText("状态：等待 10 位卡密激活");
+        tvStatus.setText("当前状态：未激活");
         tvStatus.setTextColor(Color.parseColor("#94A3B8"));
         tvStatus.setTextSize(14);
         tvStatus.setPadding(0, 0, 0, dp(24));
@@ -109,14 +108,14 @@ public class MainActivity extends Activity {
         // 卡片 1：卡密激活区
         LinearLayout cardAuth = createCard();
         TextView lbKey = new TextView(this);
-        lbKey.setText("授权卡密 (10位)");
+        lbKey.setText("授权卡密");
         lbKey.setTextColor(Color.parseColor("#E2E8F0"));
         lbKey.setTextSize(14);
         lbKey.setTypeface(Typeface.DEFAULT_BOLD);
         cardAuth.addView(lbKey);
 
         etKey = new EditText(this);
-        etKey.setHint("输入 10 位卡密");
+        etKey.setHint("请输入 10 位卡密");
         etKey.setHintTextColor(Color.parseColor("#475569"));
         etKey.setTextColor(Color.parseColor("#00E5FF"));
         etKey.setTextSize(16);
@@ -131,7 +130,7 @@ public class MainActivity extends Activity {
         cardAuth.addView(etKey);
 
         btnVerify = new Button(this);
-        btnVerify.setText("验证卡密并同步云端规则");
+        btnVerify.setText("立即激活");
         btnVerify.setTextColor(Color.WHITE);
         btnVerify.setTextSize(14);
         btnVerify.setTypeface(Typeface.DEFAULT_BOLD);
@@ -140,24 +139,17 @@ public class MainActivity extends Activity {
         cardAuth.addView(btnVerify);
 
         tvExpire = new TextView(this);
-        tvExpire.setText("有效期：未验证");
+        tvExpire.setText("到期时间：未激活");
         tvExpire.setTextColor(Color.parseColor("#64748B"));
         tvExpire.setTextSize(12);
         tvExpire.setPadding(0, dp(10), 0, 0);
         cardAuth.addView(tvExpire);
-
-        tvRuleInfo = new TextView(this);
-        tvRuleInfo.setText("云端规则：0 条域名 / 0 条 IP");
-        tvRuleInfo.setTextColor(Color.parseColor("#38BDF8"));
-        tvRuleInfo.setTextSize(12);
-        tvRuleInfo.setPadding(0, dp(4), 0, 0);
-        cardAuth.addView(tvRuleInfo);
         root.addView(cardAuth);
 
         // 卡片 2：悬浮球控制区
         LinearLayout cardFloat = createCard();
         btnFloat = new Button(this);
-        btnFloat.setText("开启桌面悬浮开关");
+        btnFloat.setText("开启悬浮开关");
         btnFloat.setTextColor(Color.WHITE);
         btnFloat.setTextSize(14);
         btnFloat.setTypeface(Typeface.DEFAULT_BOLD);
@@ -204,20 +196,19 @@ public class MainActivity extends Activity {
             circle.setColor(Color.parseColor("#1E293B"));
             circle.setStroke(dp(3), Color.parseColor("#F59E0B"));
             btnPower.setText("未激活");
-            tvStatus.setText("状态：请先验证 10 位卡密");
+            tvStatus.setText("当前状态：未激活");
         } else if (GuardVpnService.isRunning) {
             circle.setColor(Color.parseColor("#064E3B"));
             circle.setStroke(dp(4), Color.parseColor("#10B981"));
-            btnPower.setText("拦截已开启");
-            tvStatus.setText("状态：本地零延迟拦截运行中");
+            btnPower.setText("已开启");
+            tvStatus.setText("当前状态：运行中");
         } else {
             circle.setColor(Color.parseColor("#172554"));
             circle.setStroke(dp(4), Color.parseColor("#3B82F6"));
             btnPower.setText("点击开启");
-            tvStatus.setText("状态：已授权（待机中）");
+            tvStatus.setText("当前状态：已就绪");
         }
         btnPower.setBackground(circle);
-        tvRuleInfo.setText("云端规则：" + GuardVpnService.blockedDomains.size() + " 条域名 / " + GuardVpnService.blockedIPs.size() + " 条 IP");
     }
 
     private void verifyKey(String key, boolean silent) {
@@ -225,7 +216,7 @@ public class MainActivity extends Activity {
             if (!silent) Toast.makeText(this, "请输入 10 位数卡密", Toast.LENGTH_SHORT).show();
             return;
         }
-        btnVerify.setText("云端同步中...");
+        btnVerify.setText("验证中...");
         new Thread(() -> {
             try {
                 String udid = Settings.Secure.getString(getContentResolver(), Settings.Secure.ANDROID_ID);
@@ -260,15 +251,15 @@ public class MainActivity extends Activity {
                     sp.edit().putString("license_key", key).apply();
 
                     handler.post(() -> {
-                        btnVerify.setText("重新同步云端规则");
+                        btnVerify.setText("刷新状态");
                         tvExpire.setText(msg);
                         refreshUI();
-                        if (!silent) Toast.makeText(this, "激活成功！", Toast.LENGTH_SHORT).show();
+                        if (!silent) Toast.makeText(this, "激活成功", Toast.LENGTH_SHORT).show();
                     });
                 } else {
                     GuardVpnService.isAuthorized = false;
                     handler.post(() -> {
-                        btnVerify.setText("验证卡密并同步云端规则");
+                        btnVerify.setText("立即激活");
                         tvExpire.setText("验证失败：" + msg);
                         refreshUI();
                         Toast.makeText(this, msg, Toast.LENGTH_LONG).show();
@@ -276,8 +267,8 @@ public class MainActivity extends Activity {
                 }
             } catch (Exception e) {
                 handler.post(() -> {
-                    btnVerify.setText("验证卡密并同步云端规则");
-                    if (!silent) Toast.makeText(this, "连接服务器失败", Toast.LENGTH_SHORT).show();
+                    btnVerify.setText("立即激活");
+                    if (!silent) Toast.makeText(this, "连接失败，请重试", Toast.LENGTH_SHORT).show();
                 });
             }
         }).start();
@@ -313,7 +304,7 @@ public class MainActivity extends Activity {
         Intent intent = new Intent(this, FloatingService.class);
         if (Build.VERSION.SDK_INT >= 26) startForegroundService(intent);
         else startService(intent);
-        Toast.makeText(this, "悬浮球已开启", Toast.LENGTH_SHORT).show();
+        Toast.makeText(this, "悬浮开关已开启", Toast.LENGTH_SHORT).show();
     }
 
     @Override
