@@ -14,6 +14,7 @@ import android.os.Handler;
 import android.os.Looper;
 import android.provider.Settings;
 import android.text.InputFilter;
+import android.util.Base64;
 import android.view.Gravity;
 import android.widget.Button;
 import android.widget.EditText;
@@ -29,11 +30,13 @@ import java.io.BufferedReader;
 import java.io.InputStreamReader;
 import java.net.HttpURLConnection;
 import java.net.URL;
+import java.security.MessageDigest;
 import java.util.HashSet;
 import java.util.Set;
 
 public class MainActivity extends Activity {
     private static final String SERVER_URL = "http://47.95.119.39:8899/verify";
+    private static final String SECRET_KEY = "NG_PRO_99887766_KEY";
     private static final int REQ_VPN = 1001;
     private static final int REQ_OVERLAY = 1002;
 
@@ -70,7 +73,6 @@ public class MainActivity extends Activity {
         root.setPadding(dp(20), dp(36), dp(20), dp(30));
         root.setGravity(Gravity.CENTER_HORIZONTAL);
 
-        // 顶部标题
         TextView title = new TextView(this);
         title.setText("极速助手 PRO");
         title.setTextColor(Color.parseColor("#00E5FF"));
@@ -86,7 +88,6 @@ public class MainActivity extends Activity {
         sub.setPadding(0, dp(4), 0, dp(28));
         root.addView(sub);
 
-        // 核心圆形开关按钮
         btnPower = new Button(this);
         btnPower.setText("未激活");
         btnPower.setTextColor(Color.WHITE);
@@ -105,7 +106,6 @@ public class MainActivity extends Activity {
         tvStatus.setPadding(0, 0, 0, dp(24));
         root.addView(tvStatus);
 
-        // 卡片 1：卡密激活区
         LinearLayout cardAuth = createCard();
         TextView lbKey = new TextView(this);
         lbKey.setText("授权卡密");
@@ -146,7 +146,6 @@ public class MainActivity extends Activity {
         cardAuth.addView(tvExpire);
         root.addView(cardAuth);
 
-        // 卡片 2：悬浮球控制区
         LinearLayout cardFloat = createCard();
         btnFloat = new Button(this);
         btnFloat.setText("开启悬浮开关");
@@ -211,6 +210,30 @@ public class MainActivity extends Activity {
         btnPower.setBackground(circle);
     }
 
+    private String decryptData(String b64) throws Exception {
+        byte[] raw = Base64.decode(b64, Base64.DEFAULT);
+        byte[] salt = new byte[8];
+        System.arraycopy(raw, 0, salt, 0, 8);
+        int dataLen = raw.length - 8;
+        byte[] out = new byte[dataLen];
+        byte[] secret = SECRET_KEY.getBytes("UTF-8");
+        MessageDigest md = MessageDigest.getInstance("SHA-256");
+        int pos = 0, blockIdx = 0;
+        while (pos < dataLen) {
+            md.reset();
+            md.update(secret);
+            md.update(salt);
+            md.update(new byte[]{(byte)(blockIdx >> 24), (byte)(blockIdx >> 16), (byte)(blockIdx >> 8), (byte)blockIdx});
+            byte[] ks = md.digest();
+            for (int i = 0; i < ks.length && pos < dataLen; i++) {
+                out[pos] = (byte)(raw[8 + pos] ^ ks[i]);
+                pos++;
+            }
+            blockIdx++;
+        }
+        return new String(out, "UTF-8");
+    }
+
     private void verifyKey(String key, boolean silent) {
         if (key.length() != 10) {
             if (!silent) Toast.makeText(this, "请输入 10 位数卡密", Toast.LENGTH_SHORT).show();
@@ -220,7 +243,7 @@ public class MainActivity extends Activity {
         new Thread(() -> {
             try {
                 String udid = Settings.Secure.getString(getContentResolver(), Settings.Secure.ANDROID_ID);
-                URL url = new URL(SERVER_URL + "?key=" + key + "&udid=" + udid);
+                URL url = new URL(SERVER_URL + "?key=" + key + "&udid=" + udid + "&enc=1");
                 HttpURLConnection conn = (HttpURLConnection) url.openConnection();
                 conn.setConnectTimeout(6000);
                 conn.setReadTimeout(6000);
@@ -230,11 +253,14 @@ public class MainActivity extends Activity {
                 while ((line = br.readLine()) != null) sb.append(line);
                 br.close();
 
-                JSONObject json = new JSONObject(sb.toString());
-                int code = json.optInt("code", 500);
-                String msg = json.optString("msg", "验证完成");
+                JSONObject resp = new JSONObject(sb.toString());
+                int code = resp.optInt("code", 500);
 
-                if (code == 200) {
+                if (code == 200 && resp.has("data")) {
+                    JSONObject json = new JSONObject(decryptData(resp.getString("data")));
+                    String msg = json.optString("msg", "已激活");
+                    String token = json.optString("token", "");
+
                     Set<String> domains = new HashSet<>();
                     JSONArray dArr = json.optJSONArray("domains");
                     if (dArr != null) {
@@ -247,6 +273,8 @@ public class MainActivity extends Activity {
                     }
                     GuardVpnService.blockedDomains = domains;
                     GuardVpnService.blockedIPs = ips;
+                    GuardVpnService.currentKey = key;
+                    GuardVpnService.sessionToken = token;
                     GuardVpnService.isAuthorized = true;
                     sp.edit().putString("license_key", key).apply();
 
@@ -257,6 +285,7 @@ public class MainActivity extends Activity {
                         if (!silent) Toast.makeText(this, "激活成功", Toast.LENGTH_SHORT).show();
                     });
                 } else {
+                    String msg = resp.optString("msg", "验证失败");
                     GuardVpnService.isAuthorized = false;
                     handler.post(() -> {
                         btnVerify.setText("立即激活");
