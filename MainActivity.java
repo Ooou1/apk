@@ -147,7 +147,6 @@ public class MainActivity extends Activity {
         cardAuth.addView(tvExpire);
         root.addView(cardAuth);
 
-        // 功能开关区：强力模式 + 悬浮开关
         LinearLayout cardTools = createCard();
         btnStrict = new Button(this);
         btnStrict.setTextColor(Color.WHITE);
@@ -310,6 +309,7 @@ public class MainActivity extends Activity {
                     GuardVpnService.blockedIPs = parseSet(json, "ips", false);
                     GuardVpnService.whitelistDomains = parseSet(json, "w_domains", true);
                     GuardVpnService.whitelistIPs = parseSet(json, "w_ips", false);
+                    GuardVpnService.targetApps = parseSet(json, "apps", false);
                     GuardVpnService.currentKey = key;
                     GuardVpnService.sessionToken = token;
                     GuardVpnService.isAuthorized = true;
