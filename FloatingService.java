@@ -142,11 +142,11 @@ public class FloatingService extends Service {
         if (GuardVpnService.isRunning) {
             bg.setColor(Color.parseColor("#E6DC2626"));
             bg.setStroke(dp(1), Color.parseColor("#FCA5A5"));
-            floatBtn.setText("● 拦截: 开启");
+            floatBtn.setText("● 开启");
         } else {
             bg.setColor(Color.parseColor("#E6059669"));
             bg.setStroke(dp(1), Color.parseColor("#6EE7B7"));
-            floatBtn.setText("○ 拦截: 关闭");
+            floatBtn.setText("○ 关闭");
         }
         floatBtn.setBackground(bg);
     }
