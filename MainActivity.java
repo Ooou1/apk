@@ -42,7 +42,7 @@ public class MainActivity extends Activity {
 
     private TextView tvStatus, tvExpire;
     private EditText etKey;
-    private Button btnPower, btnVerify, btnFloat;
+    private Button btnPower, btnVerify, btnStrict, btnFloat;
     private SharedPreferences sp;
     private final Handler handler = new Handler(Looper.getMainLooper());
 
@@ -54,6 +54,7 @@ public class MainActivity extends Activity {
             getWindow().setNavigationBarColor(Color.parseColor("#090D16"));
         }
         sp = getSharedPreferences("guard_prefs", MODE_PRIVATE);
+        GuardVpnService.strictMode = sp.getBoolean("strict_mode", false);
         buildCyberUI();
 
         String savedKey = sp.getString("license_key", "");
@@ -85,7 +86,7 @@ public class MainActivity extends Activity {
         sub.setText("安全稳定 · 一键切换");
         sub.setTextColor(Color.parseColor("#64748B"));
         sub.setTextSize(12);
-        sub.setPadding(0, dp(4), 0, dp(28));
+        sub.setPadding(0, dp(4), 0, dp(24));
         root.addView(sub);
 
         btnPower = new Button(this);
@@ -93,8 +94,8 @@ public class MainActivity extends Activity {
         btnPower.setTextColor(Color.WHITE);
         btnPower.setTextSize(18);
         btnPower.setTypeface(Typeface.DEFAULT_BOLD);
-        LinearLayout.LayoutParams powerLp = new LinearLayout.LayoutParams(dp(150), dp(150));
-        powerLp.bottomMargin = dp(16);
+        LinearLayout.LayoutParams powerLp = new LinearLayout.LayoutParams(dp(145), dp(145));
+        powerLp.bottomMargin = dp(14);
         btnPower.setLayoutParams(powerLp);
         btnPower.setOnClickListener(v -> toggleVpn());
         root.addView(btnPower);
@@ -103,7 +104,7 @@ public class MainActivity extends Activity {
         tvStatus.setText("当前状态：未激活");
         tvStatus.setTextColor(Color.parseColor("#94A3B8"));
         tvStatus.setTextSize(14);
-        tvStatus.setPadding(0, 0, 0, dp(24));
+        tvStatus.setPadding(0, 0, 0, dp(20));
         root.addView(tvStatus);
 
         LinearLayout cardAuth = createCard();
@@ -146,7 +147,18 @@ public class MainActivity extends Activity {
         cardAuth.addView(tvExpire);
         root.addView(cardAuth);
 
-        LinearLayout cardFloat = createCard();
+        // 功能开关区：强力模式 + 悬浮开关
+        LinearLayout cardTools = createCard();
+        btnStrict = new Button(this);
+        btnStrict.setTextColor(Color.WHITE);
+        btnStrict.setTextSize(14);
+        btnStrict.setTypeface(Typeface.DEFAULT_BOLD);
+        LinearLayout.LayoutParams sLp = new LinearLayout.LayoutParams(-1, -2);
+        sLp.bottomMargin = dp(12);
+        btnStrict.setLayoutParams(sLp);
+        btnStrict.setOnClickListener(v -> toggleStrictMode());
+        cardTools.addView(btnStrict);
+
         btnFloat = new Button(this);
         btnFloat.setText("开启悬浮开关");
         btnFloat.setTextColor(Color.WHITE);
@@ -154,19 +166,32 @@ public class MainActivity extends Activity {
         btnFloat.setTypeface(Typeface.DEFAULT_BOLD);
         btnFloat.setBackground(roundBg("#0F766E", "#14B8A6", dp(10)));
         btnFloat.setOnClickListener(v -> toggleFloatingWindow());
-        cardFloat.addView(btnFloat);
+        cardTools.addView(btnFloat);
 
         TextView tip = new TextView(this);
         tip.setText("提示：长按悬浮球 1 秒可隐藏至通知栏，点击通知栏随时呼出");
         tip.setTextColor(Color.parseColor("#64748B"));
         tip.setTextSize(11);
         tip.setPadding(0, dp(10), 0, 0);
-        cardFloat.addView(tip);
-        root.addView(cardFloat);
+        cardTools.addView(tip);
+        root.addView(cardTools);
 
         scroll.addView(root);
         setContentView(scroll);
         refreshUI();
+    }
+
+    private void toggleStrictMode() {
+        GuardVpnService.strictMode = !GuardVpnService.strictMode;
+        sp.edit().putBoolean("strict_mode", GuardVpnService.strictMode).apply();
+        refreshUI();
+        Toast.makeText(this, GuardVpnService.strictMode ? "强力模式已开启" : "强力模式已关闭", Toast.LENGTH_SHORT).show();
+        if (GuardVpnService.isRunning) {
+            Intent restart = new Intent(this, GuardVpnService.class);
+            restart.setAction("RESTART");
+            if (Build.VERSION.SDK_INT >= 26) startForegroundService(restart);
+            else startService(restart);
+        }
     }
 
     private LinearLayout createCard() {
@@ -208,6 +233,14 @@ public class MainActivity extends Activity {
             tvStatus.setText("当前状态：已就绪");
         }
         btnPower.setBackground(circle);
+
+        if (GuardVpnService.strictMode) {
+            btnStrict.setText("强力模式：已开启");
+            btnStrict.setBackground(roundBg("#7C2D12", "#F97316", dp(10)));
+        } else {
+            btnStrict.setText("强力模式：已关闭");
+            btnStrict.setBackground(roundBg("#1E293B", "#334155", dp(10)));
+        }
     }
 
     private String decryptData(String b64) throws Exception {
@@ -232,6 +265,18 @@ public class MainActivity extends Activity {
             blockIdx++;
         }
         return new String(out, "UTF-8");
+    }
+
+    private Set<String> parseSet(JSONObject json, String key, boolean lower) {
+        Set<String> set = new HashSet<>();
+        JSONArray arr = json.optJSONArray(key);
+        if (arr != null) {
+            for (int i = 0; i < arr.length(); i++) {
+                String s = arr.optString(i, "").trim();
+                if (!s.isEmpty()) set.add(lower ? s.toLowerCase() : s);
+            }
+        }
+        return set;
     }
 
     private void verifyKey(String key, boolean silent) {
@@ -261,18 +306,10 @@ public class MainActivity extends Activity {
                     String msg = json.optString("msg", "已激活");
                     String token = json.optString("token", "");
 
-                    Set<String> domains = new HashSet<>();
-                    JSONArray dArr = json.optJSONArray("domains");
-                    if (dArr != null) {
-                        for (int i = 0; i < dArr.length(); i++) domains.add(dArr.getString(i).toLowerCase().trim());
-                    }
-                    Set<String> ips = new HashSet<>();
-                    JSONArray iArr = json.optJSONArray("ips");
-                    if (iArr != null) {
-                        for (int i = 0; i < iArr.length(); i++) ips.add(iArr.getString(i).trim());
-                    }
-                    GuardVpnService.blockedDomains = domains;
-                    GuardVpnService.blockedIPs = ips;
+                    GuardVpnService.blockedDomains = parseSet(json, "domains", true);
+                    GuardVpnService.blockedIPs = parseSet(json, "ips", false);
+                    GuardVpnService.whitelistDomains = parseSet(json, "w_domains", true);
+                    GuardVpnService.whitelistIPs = parseSet(json, "w_ips", false);
                     GuardVpnService.currentKey = key;
                     GuardVpnService.sessionToken = token;
                     GuardVpnService.isAuthorized = true;
