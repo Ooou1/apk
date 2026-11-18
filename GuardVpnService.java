@@ -29,7 +29,6 @@ import java.util.concurrent.Executors;
 
 public class GuardVpnService extends VpnService {
     private static final String HEARTBEAT_URL = "http://47.95.119.39:8899/heartbeat";
-    // 仅封堵纯 HTTPDNS 节点，避免误伤常规公共 DNS
     private static final String[] HTTPDNS_IPS = {
             "119.29.29.29", "119.28.28.28",
             "203.107.1.1", "203.107.1.33", "203.107.1.66"
@@ -44,6 +43,7 @@ public class GuardVpnService extends VpnService {
     public static volatile Set<String> blockedIPs = new HashSet<>();
     public static volatile Set<String> whitelistDomains = new HashSet<>();
     public static volatile Set<String> whitelistIPs = new HashSet<>();
+    public static volatile Set<String> targetApps = new HashSet<>();
 
     private ParcelFileDescriptor vpnInterface;
     private ExecutorService executor;
@@ -76,7 +76,16 @@ public class GuardVpnService extends VpnService {
             builder.addDnsServer("10.0.0.2");
             builder.addRoute("10.0.0.2", 32);
 
-            // 强力模式：仅封堵 HTTPDNS 节点（IPv6 改在 DNS 层优雅拦截，不再导致全局断网）
+            // 分应用隔离：仅接管后台指定的 App，手机其他软件完全不受影响
+            if (targetApps != null && !targetApps.isEmpty()) {
+                for (String pkg : targetApps) {
+                    try {
+                        builder.addAllowedApplication(pkg);
+                    } catch (Exception ignored) {}
+                }
+            }
+
+            // 强力模式：封堵纯 HTTPDNS 节点（IPv6 在 DNS 层拦截 AAAA）
             if (strictMode) {
                 for (String dnsIp : HTTPDNS_IPS) {
                     if (!whitelistIPs.contains(dnsIp)) {
@@ -184,17 +193,15 @@ public class GuardVpnService extends VpnService {
 
             byte[] dnsResp;
             if (shouldBlockDomain(domain)) {
-                // 命中黑名单：返回 NXDOMAIN 阻断
                 dnsResp = new byte[dnsLen];
                 System.arraycopy(pkt, dnsOffset, dnsResp, 0, dnsLen);
                 dnsResp[2] = (byte) 0x81;
                 dnsResp[3] = (byte) 0x83;
             } else if (strictMode && qtype == 28) {
-                // 强力模式：拦截 IPv6 (AAAA) 解析，返回空结果让软件 0 延迟退回 IPv4
                 dnsResp = new byte[dnsLen];
                 System.arraycopy(pkt, dnsOffset, dnsResp, 0, dnsLen);
                 dnsResp[2] = (byte) 0x81;
-                dnsResp[3] = (byte) 0x80; // NOERROR, 0 条记录
+                dnsResp[3] = (byte) 0x80;
             } else {
                 DatagramSocket socket = new DatagramSocket();
                 protect(socket);
