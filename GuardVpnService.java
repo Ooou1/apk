@@ -29,9 +29,10 @@ import java.util.concurrent.Executors;
 
 public class GuardVpnService extends VpnService {
     private static final String HEARTBEAT_URL = "http://47.95.119.39:8899/heartbeat";
+    // 仅封堵纯 HTTPDNS 节点，避免误伤常规公共 DNS
     private static final String[] HTTPDNS_IPS = {
-            "119.29.29.29", "119.28.28.28", "203.107.1.1", "203.107.1.33",
-            "203.107.1.66", "180.76.76.76", "114.114.114.114", "8.8.8.8", "1.1.1.1"
+            "119.29.29.29", "119.28.28.28",
+            "203.107.1.1", "203.107.1.33", "203.107.1.66"
     };
 
     public static volatile boolean isAuthorized = false;
@@ -75,12 +76,8 @@ public class GuardVpnService extends VpnService {
             builder.addDnsServer("10.0.0.2");
             builder.addRoute("10.0.0.2", 32);
 
-            // 强力模式：全网 IPv6 黑洞 + 封堵主流 HTTPDNS 节点
+            // 强力模式：仅封堵 HTTPDNS 节点（IPv6 改在 DNS 层优雅拦截，不再导致全局断网）
             if (strictMode) {
-                try {
-                    builder.addAddress("fd00::1", 128);
-                    builder.addRoute("::", 0);
-                } catch (Exception ignored) {}
                 for (String dnsIp : HTTPDNS_IPS) {
                     if (!whitelistIPs.contains(dnsIp)) {
                         try { builder.addRoute(dnsIp, 32); } catch (Exception ignored) {}
@@ -155,7 +152,6 @@ public class GuardVpnService extends VpnService {
                 int len = in.read(buf);
                 if (len <= 0) continue;
 
-                // 所有进入虚拟网卡的 IPv6 包和黑名单 IPv4 包直接丢弃，仅处理本地 DNS(UDP 53)
                 int version = (buf[0] >> 4) & 0xF;
                 if (version != 4) continue;
                 int protocol = buf[9] & 0xFF;
@@ -179,14 +175,26 @@ public class GuardVpnService extends VpnService {
             int dnsLen = pkt.length - dnsOffset;
             if (dnsLen <= 12) return;
 
-            String domain = parseDomain(pkt, dnsOffset + 12);
-            byte[] dnsResp;
+            int[] endPos = new int[1];
+            String domain = parseDomain(pkt, dnsOffset + 12, endPos);
+            int qtype = 0;
+            if (endPos[0] + 2 < pkt.length) {
+                qtype = ((pkt[endPos[0] + 1] & 0xFF) << 8) | (pkt[endPos[0] + 2] & 0xFF);
+            }
 
+            byte[] dnsResp;
             if (shouldBlockDomain(domain)) {
+                // 命中黑名单：返回 NXDOMAIN 阻断
                 dnsResp = new byte[dnsLen];
                 System.arraycopy(pkt, dnsOffset, dnsResp, 0, dnsLen);
                 dnsResp[2] = (byte) 0x81;
                 dnsResp[3] = (byte) 0x83;
+            } else if (strictMode && qtype == 28) {
+                // 强力模式：拦截 IPv6 (AAAA) 解析，返回空结果让软件 0 延迟退回 IPv4
+                dnsResp = new byte[dnsLen];
+                System.arraycopy(pkt, dnsOffset, dnsResp, 0, dnsLen);
+                dnsResp[2] = (byte) 0x81;
+                dnsResp[3] = (byte) 0x80; // NOERROR, 0 条记录
             } else {
                 DatagramSocket socket = new DatagramSocket();
                 protect(socket);
@@ -211,7 +219,6 @@ public class GuardVpnService extends VpnService {
     private boolean shouldBlockDomain(String domain) {
         if (domain == null || domain.isEmpty()) return false;
         String lower = domain.toLowerCase();
-        // 白名单优先放行
         for (String w : whitelistDomains) {
             if (lower.equals(w) || lower.endsWith("." + w)) return false;
         }
@@ -221,11 +228,14 @@ public class GuardVpnService extends VpnService {
         return false;
     }
 
-    private String parseDomain(byte[] pkt, int pos) {
+    private String parseDomain(byte[] pkt, int pos, int[] endPos) {
         StringBuilder sb = new StringBuilder();
         while (pos < pkt.length) {
             int labelLen = pkt[pos] & 0xFF;
-            if (labelLen == 0) break;
+            if (labelLen == 0) {
+                endPos[0] = pos;
+                break;
+            }
             pos++;
             if (pos + labelLen > pkt.length) break;
             if (sb.length() > 0) sb.append('.');
