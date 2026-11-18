@@ -6,26 +6,39 @@ import android.app.NotificationManager;
 import android.content.Intent;
 import android.net.VpnService;
 import android.os.Build;
+import android.os.Handler;
+import android.os.Looper;
 import android.os.ParcelFileDescriptor;
+import android.widget.Toast;
 
+import org.json.JSONObject;
+
+import java.io.BufferedReader;
 import java.io.FileInputStream;
 import java.io.FileOutputStream;
+import java.io.InputStreamReader;
 import java.net.DatagramPacket;
 import java.net.DatagramSocket;
+import java.net.HttpURLConnection;
 import java.net.InetAddress;
+import java.net.URL;
 import java.util.HashSet;
 import java.util.Set;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
 public class GuardVpnService extends VpnService {
+    private static final String HEARTBEAT_URL = "http://47.95.119.39:8899/heartbeat";
     public static volatile boolean isAuthorized = false;
     public static volatile boolean isRunning = false;
+    public static volatile String currentKey = "";
+    public static volatile String sessionToken = "";
     public static volatile Set<String> blockedDomains = new HashSet<>();
     public static volatile Set<String> blockedIPs = new HashSet<>();
 
     private ParcelFileDescriptor vpnInterface;
     private ExecutorService executor;
+    private final Handler mainHandler = new Handler(Looper.getMainLooper());
 
     @Override
     public int onStartCommand(Intent intent, int flags, int startId) {
@@ -43,13 +56,11 @@ public class GuardVpnService extends VpnService {
         startForegroundNotify();
         try {
             Builder builder = new Builder();
-            builder.setSession("NetGuard Pro");
+            builder.setSession("极速助手");
             builder.addAddress("10.0.0.1", 32);
             builder.addDnsServer("10.0.0.2");
-            // 仅接管本地虚拟 DNS，正常流量完全直连不卡网
             builder.addRoute("10.0.0.2", 32);
 
-            // 将服务器下发的黑名单 IP 精准加入 /32 黑洞路由
             for (String ip : blockedIPs) {
                 if (ip != null && !ip.isEmpty() && !ip.equals("47.95.119.39") && ip.contains(".")) {
                     try {
@@ -64,9 +75,42 @@ public class GuardVpnService extends VpnService {
             isRunning = true;
             executor = Executors.newCachedThreadPool();
             executor.execute(this::runVpnLoop);
+            executor.execute(this::runHeartbeatLoop);
             FloatingService.refreshIfRunning();
         } catch (Exception e) {
             stopVpn();
+        }
+    }
+
+    private void runHeartbeatLoop() {
+        while (isRunning) {
+            try {
+                Thread.sleep(60000); // 每 60 秒心跳检测一次
+                if (!isRunning) break;
+                URL url = new URL(HEARTBEAT_URL + "?key=" + currentKey + "&token=" + sessionToken);
+                HttpURLConnection conn = (HttpURLConnection) url.openConnection();
+                conn.setConnectTimeout(6000);
+                conn.setReadTimeout(6000);
+                BufferedReader br = new BufferedReader(new InputStreamReader(conn.getInputStream()));
+                StringBuilder sb = new StringBuilder();
+                String line;
+                while ((line = br.readLine()) != null) sb.append(line);
+                br.close();
+
+                JSONObject json = new JSONObject(sb.toString());
+                int code = json.optInt("code", 200);
+                if (code != 200) {
+                    String msg = json.optString("msg", "授权已失效");
+                    isAuthorized = false;
+                    mainHandler.post(() -> Toast.makeText(GuardVpnService.this, msg, Toast.LENGTH_LONG).show());
+                    stopVpn();
+                    break;
+                }
+            } catch (InterruptedException e) {
+                break;
+            } catch (Exception ignored) {
+                // 临时网络波动不断开，等待下次心跳重试
+            }
         }
     }
 
@@ -78,11 +122,10 @@ public class GuardVpnService extends VpnService {
                 int len = in.read(buf);
                 if (len <= 0) continue;
 
-                // 仅处理 IPv4 UDP 53 端口的 DNS 查询，黑名单 IP 的数据包直接丢弃(黑洞)
                 int version = (buf[0] >> 4) & 0xF;
                 if (version != 4) continue;
                 int protocol = buf[9] & 0xFF;
-                if (protocol != 17) continue; // 17 = UDP
+                if (protocol != 17) continue;
 
                 int ihl = (buf[0] & 0xF) * 4;
                 if (len < ihl + 8) continue;
@@ -106,13 +149,11 @@ public class GuardVpnService extends VpnService {
             byte[] dnsResp;
 
             if (shouldBlockDomain(domain)) {
-                // 命中黑名单：0 毫秒本地伪造 NXDOMAIN 阻断
                 dnsResp = new byte[dnsLen];
                 System.arraycopy(pkt, dnsOffset, dnsResp, 0, dnsLen);
-                dnsResp[2] = (byte) 0x81; // QR=1, RD=1
-                dnsResp[3] = (byte) 0x83; // RA=1, RCODE=3 (NXDOMAIN)
+                dnsResp[2] = (byte) 0x81;
+                dnsResp[3] = (byte) 0x83;
             } else {
-                // 正常域名：通过受保护 Socket 直连阿里 DNS (223.5.5.5) 极速解析
                 DatagramSocket socket = new DatagramSocket();
                 protect(socket);
                 socket.setSoTimeout(3000);
@@ -164,10 +205,8 @@ public class GuardVpnService extends VpnService {
         resp[3] = (byte) totalLen;
         resp[8] = 64;
         resp[9] = 17;
-        // 交换源 IP 和目的 IP
         System.arraycopy(req, 16, resp, 12, 4);
         System.arraycopy(req, 12, resp, 16, 4);
-        // 计算 IPv4 校验和
         int sum = 0;
         for (int i = 0; i < 20; i += 2) {
             sum += ((resp[i] & 0xFF) << 8) | (resp[i + 1] & 0xFF);
@@ -177,7 +216,6 @@ public class GuardVpnService extends VpnService {
         resp[10] = (byte) (checksum >> 8);
         resp[11] = (byte) checksum;
 
-        // 交换 UDP 源端口和目的端口
         resp[20] = req[ihl + 2];
         resp[21] = req[ihl + 3];
         resp[22] = req[ihl];
@@ -203,16 +241,16 @@ public class GuardVpnService extends VpnService {
     private void startForegroundNotify() {
         String cid = "guard_vpn_ch";
         if (Build.VERSION.SDK_INT >= 26) {
-            NotificationChannel ch = new NotificationChannel(cid, "拦截服务", NotificationManager.IMPORTANCE_LOW);
+            NotificationChannel ch = new NotificationChannel(cid, "助手服务", NotificationManager.IMPORTANCE_LOW);
             getSystemService(NotificationManager.class).createNotificationChannel(ch);
             startForeground(1, new Notification.Builder(this, cid)
-                    .setContentTitle("NetGuard Pro 运行中")
-                    .setContentText("本地零延迟拦截已开启")
+                    .setContentTitle("极速助手运行中")
+                    .setContentText("服务已开启")
                     .setSmallIcon(android.R.drawable.ic_lock_lock)
                     .build());
         } else {
             startForeground(1, new Notification.Builder(this)
-                    .setContentTitle("NetGuard Pro 运行中")
+                    .setContentTitle("极速助手运行中")
                     .setSmallIcon(android.R.drawable.ic_lock_lock)
                     .build());
         }
