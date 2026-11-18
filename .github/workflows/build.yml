@@ -1,4 +1,4 @@
-name: Build Android APK
+name: Build Android Release APK
 
 on:
   push:
@@ -19,13 +19,18 @@ jobs:
         distribution: 'temurin'
         java-version: '17'
 
-    - name: 3. 自动生成安卓工程结构并打包 APK
+    - name: 3. 生成混淆正式版 APK
       run: |
         mkdir -p app/src/main/java/com/guard
         cp MainActivity.java GuardVpnService.java FloatingService.java app/src/main/java/com/guard/
 
+        # 自动生成正式签名证书
+        keytool -genkey -v -keystore app/release.jks -keyalg RSA -keysize 2048 -validity 10000 \
+          -alias releasekey -storepass 123456 -keypass 123456 \
+          -dname "CN=Pro, OU=Dev, O=Pro, L=BJ, ST=BJ, C=CN"
+
         cat << 'EOF' > settings.gradle
-        rootProject.name = "NetGuardPro"
+        rootProject.name = "SpeedPro"
         include ':app'
         EOF
 
@@ -47,17 +52,39 @@ jobs:
         }
         EOF
 
+        cat << 'EOF' > app/proguard-rules.pro
+        -keep public class com.guard.MainActivity
+        -keep public class com.guard.GuardVpnService
+        -keep public class com.guard.FloatingService
+        EOF
+
         cat << 'EOF' > app/build.gradle
         apply plugin: 'com.android.application'
         android {
             namespace 'com.guard'
             compileSdk 34
             defaultConfig {
-                applicationId "com.guard.netpro"
+                applicationId "com.guard.speedpro"
                 minSdk 24
                 targetSdk 33
-                versionCode 1
-                versionName "1.0"
+                versionCode 2
+                versionName "2.0"
+            }
+            signingConfigs {
+                release {
+                    storeFile file("release.jks")
+                    storePassword "123456"
+                    keyAlias "releasekey"
+                    keyPassword "123456"
+                }
+            }
+            buildTypes {
+                release {
+                    minifyEnabled true
+                    shrinkResources true
+                    proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
+                    signingConfig signingConfigs.release
+                }
             }
             compileOptions {
                 sourceCompatibility JavaVersion.VERSION_17
@@ -73,7 +100,7 @@ jobs:
             <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
             <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
             <application
-                android:label="NetGuard Pro"
+                android:label="极速助手 PRO"
                 android:usesCleartextTraffic="true"
                 android:theme="@android:style/Theme.Material.NoActionBar">
                 <activity android:name=".MainActivity" android:exported="true">
@@ -92,10 +119,10 @@ jobs:
         </manifest>
         EOF
 
-        gradle assembleDebug
+        gradle assembleRelease
 
-    - name: 4. 上传生成的 APK
+    - name: 4. 上传正式版 APK
       uses: actions/upload-artifact@v4
       with:
-        name: NetGuardPro-APK
-        path: app/build/outputs/apk/debug/app-debug.apk
+        name: SpeedPro-Release-APK
+        path: app/build/outputs/apk/release/app-release.apk
