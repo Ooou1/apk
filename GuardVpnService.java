@@ -29,12 +29,20 @@ import java.util.concurrent.Executors;
 
 public class GuardVpnService extends VpnService {
     private static final String HEARTBEAT_URL = "http://47.95.119.39:8899/heartbeat";
+    private static final String[] HTTPDNS_IPS = {
+            "119.29.29.29", "119.28.28.28", "203.107.1.1", "203.107.1.33",
+            "203.107.1.66", "180.76.76.76", "114.114.114.114", "8.8.8.8", "1.1.1.1"
+    };
+
     public static volatile boolean isAuthorized = false;
     public static volatile boolean isRunning = false;
+    public static volatile boolean strictMode = false;
     public static volatile String currentKey = "";
     public static volatile String sessionToken = "";
     public static volatile Set<String> blockedDomains = new HashSet<>();
     public static volatile Set<String> blockedIPs = new HashSet<>();
+    public static volatile Set<String> whitelistDomains = new HashSet<>();
+    public static volatile Set<String> whitelistIPs = new HashSet<>();
 
     private ParcelFileDescriptor vpnInterface;
     private ExecutorService executor;
@@ -42,9 +50,15 @@ public class GuardVpnService extends VpnService {
 
     @Override
     public int onStartCommand(Intent intent, int flags, int startId) {
-        if (intent != null && "STOP".equals(intent.getAction())) {
+        String action = intent != null ? intent.getAction() : "";
+        if ("STOP".equals(action)) {
             stopVpn();
             return START_NOT_STICKY;
+        }
+        if ("RESTART".equals(action) && isAuthorized) {
+            stopVpnInternal();
+            startVpn();
+            return START_STICKY;
         }
         if (!isRunning && isAuthorized) {
             startVpn();
@@ -61,12 +75,33 @@ public class GuardVpnService extends VpnService {
             builder.addDnsServer("10.0.0.2");
             builder.addRoute("10.0.0.2", 32);
 
-            for (String ip : blockedIPs) {
-                if (ip != null && !ip.isEmpty() && !ip.equals("47.95.119.39") && ip.contains(".")) {
-                    try {
-                        builder.addRoute(ip, 32);
-                    } catch (Exception ignored) {}
+            // 强力模式：全网 IPv6 黑洞 + 封堵主流 HTTPDNS 节点
+            if (strictMode) {
+                try {
+                    builder.addAddress("fd00::1", 128);
+                    builder.addRoute("::", 0);
+                } catch (Exception ignored) {}
+                for (String dnsIp : HTTPDNS_IPS) {
+                    if (!whitelistIPs.contains(dnsIp)) {
+                        try { builder.addRoute(dnsIp, 32); } catch (Exception ignored) {}
+                    }
                 }
+            }
+
+            // 下发的黑名单 IP / CIDR 网段（自动跳过白名单与授权服务器）
+            for (String entry : blockedIPs) {
+                if (entry == null || entry.isEmpty()) continue;
+                if (entry.equals("47.95.119.39") || whitelistIPs.contains(entry)) continue;
+                try {
+                    if (entry.contains("/")) {
+                        String[] parts = entry.split("/");
+                        builder.addRoute(parts[0].trim(), Integer.parseInt(parts[1].trim()));
+                    } else if (entry.contains(":")) {
+                        builder.addRoute(entry, 128);
+                    } else {
+                        builder.addRoute(entry, 32);
+                    }
+                } catch (Exception ignored) {}
             }
 
             vpnInterface = builder.establish();
@@ -85,7 +120,7 @@ public class GuardVpnService extends VpnService {
     private void runHeartbeatLoop() {
         while (isRunning) {
             try {
-                Thread.sleep(60000); // 每 60 秒心跳检测一次
+                Thread.sleep(60000);
                 if (!isRunning) break;
                 URL url = new URL(HEARTBEAT_URL + "?key=" + currentKey + "&token=" + sessionToken);
                 HttpURLConnection conn = (HttpURLConnection) url.openConnection();
@@ -108,9 +143,7 @@ public class GuardVpnService extends VpnService {
                 }
             } catch (InterruptedException e) {
                 break;
-            } catch (Exception ignored) {
-                // 临时网络波动不断开，等待下次心跳重试
-            }
+            } catch (Exception ignored) {}
         }
     }
 
@@ -122,6 +155,7 @@ public class GuardVpnService extends VpnService {
                 int len = in.read(buf);
                 if (len <= 0) continue;
 
+                // 所有进入虚拟网卡的 IPv6 包和黑名单 IPv4 包直接丢弃，仅处理本地 DNS(UDP 53)
                 int version = (buf[0] >> 4) & 0xF;
                 if (version != 4) continue;
                 int protocol = buf[9] & 0xFF;
@@ -177,6 +211,10 @@ public class GuardVpnService extends VpnService {
     private boolean shouldBlockDomain(String domain) {
         if (domain == null || domain.isEmpty()) return false;
         String lower = domain.toLowerCase();
+        // 白名单优先放行
+        for (String w : whitelistDomains) {
+            if (lower.equals(w) || lower.endsWith("." + w)) return false;
+        }
         for (String d : blockedDomains) {
             if (lower.equals(d) || lower.endsWith("." + d)) return true;
         }
@@ -227,12 +265,16 @@ public class GuardVpnService extends VpnService {
         return resp;
     }
 
-    private void stopVpn() {
+    private void stopVpnInternal() {
         isRunning = false;
         try {
             if (vpnInterface != null) vpnInterface.close();
         } catch (Exception ignored) {}
         if (executor != null) executor.shutdownNow();
+    }
+
+    private void stopVpn() {
+        stopVpnInternal();
         FloatingService.refreshIfRunning();
         stopForeground(true);
         stopSelf();
